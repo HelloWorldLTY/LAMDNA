@@ -1,4 +1,4 @@
-# CREDesign
+# This is code repo for paper: Multi-Modal Agent Facilitates Atlas-Level DNA Sequence Design
 
 ## Installation
 
@@ -12,9 +12,9 @@ Step2: Prepare the environment
 
 Install HyenaDNA
 
-Install regLM
+Install regLM (by referring the version in this folder)
 
-Update transformers to the updated version, e.g.:
+Update transformers to the updated version (for testing the updated LLMs), e.g.:
 
 ```
 pip install transformers --upgrade
@@ -29,4 +29,8 @@ Please refer the files under folder **tutorial** for an example of model trainin
 We thank developers of [regLM](https://github.com/Genentech/regLM/tree/main/src/reglm), [gReLU](https://genentech.github.io/gReLU/), and [Huggingface](https://huggingface.co/) for their great work in open-source software design.
 
 ## Citation
+
+```
+TBD
+```
 
