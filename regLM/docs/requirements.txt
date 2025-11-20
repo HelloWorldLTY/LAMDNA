@@ -1,0 +1,21 @@
+bpnet-lite < 0.6.0
+captum == 0.5.0
+enformer_pytorch
+furo==2021.11.16
+# Requirements file for ReadTheDocs, check .readthedocs.yml.
+# To build the module reference correctly, make sure every external package
+# under `install_requires` in `setup.cfg` is also listed here!
+# sphinx_rtd_theme
+myst-parser[linkify]
+numpy
+pandas
+pytorch-lightning < 2.0
+sphinx>=3.2.1
+sphinxcontrib-applehelp==1.0.2
+sphinxcontrib-devhelp==1.0.2
+sphinxcontrib-htmlhelp==2.0.0
+sphinxcontrib-jsmath==1.0.1
+sphinxcontrib-qthelp==1.0.3
+sphinxcontrib-serializinghtml==1.1.5
+torch
+torchmetrics
