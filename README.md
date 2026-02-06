@@ -20,6 +20,14 @@ Update transformers to the updated version (for testing the updated LLMs), e.g.:
 pip install transformers --upgrade
 ```
 
+Step3 (optional): Setup agent pipeline
+
+Please refer the folder "agent" to set up Biomni for building an AI agentic pipeline of DNA sequence design and analysis.
+
+## Training
+
+Please refer the **llama_text_pred.py** as the default model pipeline, and we also provide **mix_prompt_training** folder to train a model based on multiple prompts.
+
 ## Tutorials
 
 Please refer the files under folder **tutorial** for an example of model training and inference.
