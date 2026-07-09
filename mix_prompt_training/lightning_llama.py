@@ -33,6 +33,40 @@ from torch.utils.data import Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
+def resolve_device(device=None):
+    """
+    Resolve the compute device without hard-coding CUDA.
+
+    Priority: explicit ``device`` argument > ``LAMDNA_DEVICE`` environment
+    variable > CUDA if available > CPU.
+    """
+    if device is not None:
+        return torch.device(device)
+    env_device = os.environ.get("LAMDNA_DEVICE")
+    if env_device:
+        return torch.device(env_device)
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def set_seed(seed, deterministic=False):
+    """Seed Python, NumPy, torch and Lightning RNGs for reproducibility."""
+    import random
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    pl.seed_everything(seed, workers=True)
+    if deterministic:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+
+
+# Default path to the cloned hyenaDNA repository. Override via the
+# ``HYENADNA_PATH`` environment variable or the ``hyenadna_path`` argument.
+DEFAULT_HYENADNA_PATH = os.environ.get("HYENADNA_PATH", "./hyena-dna")
+
+
 class CharLanguageDataset(Dataset):
     def __init__(self, seqs, labels, seq_len=None, llm_name = "meta-llama/Llama-3.2-3B-Instruct", max_token_len=15):
         """
@@ -91,13 +125,11 @@ class CharLanguageDataset(Dataset):
         self.label_itos = {v: k for k, v in self.label_stoi.items()}
         self.base_itos = {v: k for k, v in self.base_stoi.items()}
         
-        device_map = 'cuda'
-        # model_name="meta-llama/Llama-3.1-8B-Instruct"
         model_name = llm_name
-        # Load the tokenizer and model
-        tokenizer = AutoTokenizer.from_pretrained(model_name, device_map = device_map)
+        # Load the tokenizer (tokenizers are device-agnostic; no device_map needed).
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
         tokenizer.pad_token = tokenizer.eos_token
-        self.tokenizer = tokenizer 
+        self.tokenizer = tokenizer
         
         
 
@@ -197,7 +229,7 @@ class CharLanguageDataset(Dataset):
 def load_pretrained_model(
     ckpt_dir="./checkpoints/",
     model="hyenadna-medium-160k-seqlen",
-    hyenadna_path="/code/hyena-dna",
+    hyenadna_path=DEFAULT_HYENADNA_PATH,
 ):
     """
     Load a pretrained hyenaDNA foundation model.
@@ -271,14 +303,15 @@ class LightningModel(pl.LightningModule):
         self,
         config=None,
         ckpt_dir="./checkpoints/hyenadna-medium-160k-seqlen",
-        hyenadna_path="/code/hyena-dna",
+        hyenadna_path=DEFAULT_HYENADNA_PATH,
         save_dir=".",
         lr=1e-4,
         label_len=None,
         llm_name = "meta-llama/Llama-3.2-3B-Instruct",
         latent_size = 3072,
         align_head = 'relu',
-        max_token_len = 15
+        max_token_len = 15,
+        device = None,
     ):
         super().__init__()
 
@@ -337,28 +370,35 @@ class LightningModel(pl.LightningModule):
         # Trailing zeros in the label will be ignored in calculating the loss
         self.loss = lambda logits, y: F.cross_entropy(logits, y, ignore_index=0)
         
-        device_map = 'cuda'
-        # model_name="meta-llama/Llama-3.1-8B-Instruct"
+        dev = resolve_device(device)
+        self._device = dev
         model_name = llm_name
-        
-        tokenizer = AutoTokenizer.from_pretrained(model_name, device_map = device_map)
+
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
         tokenizer.pad_token = tokenizer.eos_token
-        self.tokenizer = tokenizer 
-        
-        model_llama = AutoModelForCausalLM.from_pretrained(model_name, device_map = device_map)
+        self.tokenizer = tokenizer
+
+        model_llama = AutoModelForCausalLM.from_pretrained(model_name)
         print("Successfully create Llama")
-        
+
         if align_head == 'relu':
             self.emb_align = nn.Sequential(nn.Linear(self.latent_size,self.latent_size), nn.GELU(), nn.Linear(self.latent_size,256))
-            
+
         if align_head == 'linear':
             self.emb_align = nn.Linear(self.latent_size,256)
         print("Successfully create aligner")
-        
-        self.Llama_encoder = model_llama.cuda()
-        self.model = self.model.cuda()
-        self.emb_align = self.emb_align.cuda()
-        
+
+        # The LLM is used only as a frozen instruction encoder (excluded from
+        # configure_optimizers). Freeze it and keep it in eval mode so no
+        # gradients are built through the language model.
+        self.Llama_encoder = model_llama.to(dev)
+        self.Llama_encoder.eval()
+        for param in self.Llama_encoder.parameters():
+            param.requires_grad = False
+
+        self.model = self.model.to(dev)
+        self.emb_align = self.emb_align.to(dev)
+
         print(self.Llama_encoder.device)
 
     def forward(self, x, drop_label=True, return_logits=False):
@@ -416,7 +456,7 @@ class LightningModel(pl.LightningModule):
             else:
                 return logits.softmax(1)
         else:
-            instruct = x.cuda()
+            instruct = x.to(self._device)
             # print(len(instruct))
             instruct_emb = self.Llama_encoder(instruct,return_dict=True, output_hidden_states=True)['hidden_states'][-1]
             instruct_emb = self.emb_align(instruct_emb)
@@ -1136,6 +1176,10 @@ class LightningModel(pl.LightningModule):
             labels = [labels]
         # assert len(labels[0]) == self.label_len
 
+        # Temperature must be strictly positive; it rescales the logits before
+        # the softmax (>1 flattens the distribution, <1 sharpens it).
+        assert temperature > 0, "temperature must be > 0"
+
         # bases to add
         if max_new_tokens is None:
             max_new_tokens = self.seq_len
@@ -1167,10 +1211,12 @@ class LightningModel(pl.LightningModule):
             for idx_c in range(max_new_tokens):
                 self.eval()
                 if idx_c ==0:
-                    # Predict next base probabilities
-                    probs_next = self.forward(idxs, return_logits=False)[:, :, -1]  # N, 16
+                    # Predict next base logits
+                    logits_next = self.forward(idxs, return_logits=True)[:, :, -1]  # N, 16
                 else:
-                    probs_next = self.forward_joint(idxs, return_logits=False)[:, :, -1]  # N, 16
+                    logits_next = self.forward_joint(idxs, return_logits=True)[:, :, -1]  # N, 16
+                # Apply temperature scaling, then convert to probabilities.
+                probs_next = (logits_next / temperature).softmax(1)  # N, 16
                 # print(probs_next.shape)
     
                 # Get next indices
@@ -1305,13 +1351,11 @@ class EmbLanguageDataset(Dataset):
         self.label_itos = {v: k for k, v in self.label_stoi.items()}
         self.base_itos = {v: k for k, v in self.base_stoi.items()}
         
-        device_map = 'cuda'
-        # model_name="meta-llama/Llama-3.1-8B-Instruct"
         model_name = llm_name
-        # Load the tokenizer and model
-        tokenizer = AutoTokenizer.from_pretrained(model_name, device_map = device_map)
+        # Load the tokenizer (tokenizers are device-agnostic; no device_map needed).
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
         tokenizer.pad_token = tokenizer.eos_token
-        self.tokenizer = tokenizer 
+        self.tokenizer = tokenizer
         
         
 
@@ -1411,7 +1455,7 @@ class EmbLanguageDataset(Dataset):
 def load_pretrained_model(
     ckpt_dir="./checkpoints/",
     model="hyenadna-medium-160k-seqlen",
-    hyenadna_path="/code/hyena-dna",
+    hyenadna_path=DEFAULT_HYENADNA_PATH,
 ):
     """
     Load a pretrained hyenaDNA foundation model.
@@ -1485,14 +1529,15 @@ class EmbLightningModel(pl.LightningModule):
         self,
         config=None,
         ckpt_dir="./checkpoints/hyenadna-medium-160k-seqlen",
-        hyenadna_path="/code/hyena-dna",
+        hyenadna_path=DEFAULT_HYENADNA_PATH,
         save_dir=".",
         lr=1e-4,
         label_len=None,
         llm_name = "meta-llama/Llama-3.2-3B-Instruct",
         latent_size = 3072,
         align_head = 'relu',
-        max_token_len = 15
+        max_token_len = 15,
+        device = None,
     ):
         super().__init__()
 
@@ -1551,28 +1596,28 @@ class EmbLightningModel(pl.LightningModule):
         # Trailing zeros in the label will be ignored in calculating the loss
         self.loss = lambda logits, y: F.cross_entropy(logits, y, ignore_index=0)
         
-        device_map = 'cuda'
-        # model_name="meta-llama/Llama-3.1-8B-Instruct"
+        dev = resolve_device(device)
+        self._device = dev
         model_name = llm_name
-        
-        tokenizer = AutoTokenizer.from_pretrained(model_name, device_map = device_map)
+
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
         tokenizer.pad_token = tokenizer.eos_token
-        self.tokenizer = tokenizer 
-        
-        model_llama = AutoModelForCausalLM.from_pretrained(model_name, device_map = device_map)
+        self.tokenizer = tokenizer
+
+        model_llama = AutoModelForCausalLM.from_pretrained(model_name)
         print("Successfully create Llama")
-        
+
         if align_head == 'relu':
             self.emb_align = nn.Sequential(nn.Linear(self.latent_size,self.latent_size), nn.GELU(), nn.Linear(self.latent_size,256))
-            
+
         if align_head == 'linear':
             self.emb_align = nn.Linear(self.latent_size,256)
         print("Successfully create aligner")
-        
-        # self.Llama_encoder = model_llama.cuda()
-        self.model = self.model.cuda()
-        self.emb_align = self.emb_align.cuda()
-        
+
+        # self.Llama_encoder = model_llama.to(dev)
+        self.model = self.model.to(dev)
+        self.emb_align = self.emb_align.to(dev)
+
         # print(self.Llama_encoder.device)
 
     def forward(self, x, drop_label=True, return_logits=False):
@@ -1630,7 +1675,7 @@ class EmbLightningModel(pl.LightningModule):
             else:
                 return logits.softmax(1)
         else:
-            instruct = x.cuda()
+            instruct = x.to(self._device)
             # print(len(instruct))
             instruct_emb = instruct
             instruct_emb = self.emb_align(instruct_emb)
@@ -2350,6 +2395,10 @@ class EmbLightningModel(pl.LightningModule):
             labels = [labels]
         # assert len(labels[0]) == self.label_len
 
+        # Temperature must be strictly positive; it rescales the logits before
+        # the softmax (>1 flattens the distribution, <1 sharpens it).
+        assert temperature > 0, "temperature must be > 0"
+
         # bases to add
         if max_new_tokens is None:
             max_new_tokens = self.seq_len
@@ -2381,10 +2430,12 @@ class EmbLightningModel(pl.LightningModule):
             for idx_c in range(max_new_tokens):
                 self.eval()
                 if idx_c ==0:
-                    # Predict next base probabilities
-                    probs_next = self.forward(idxs, return_logits=False)[:, :, -1]  # N, 16
+                    # Predict next base logits
+                    logits_next = self.forward(idxs, return_logits=True)[:, :, -1]  # N, 16
                 else:
-                    probs_next = self.forward_joint(idxs, return_logits=False)[:, :, -1]  # N, 16
+                    logits_next = self.forward_joint(idxs, return_logits=True)[:, :, -1]  # N, 16
+                # Apply temperature scaling, then convert to probabilities.
+                probs_next = (logits_next / temperature).softmax(1)  # N, 16
                 # print(probs_next.shape)
     
                 # Get next indices

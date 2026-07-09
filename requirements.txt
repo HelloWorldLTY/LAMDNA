@@ -1,0 +1,39 @@
+# =====================================================================
+# Reference environment for LAMDNA (Multi-Modal Agent for Atlas-Level
+# DNA Sequence Design). Tested with Python 3.11.
+#
+#   python -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# Version constraints worth knowing about:
+#   * pytorch-lightning is pinned < 2.0 because the models use the
+#     `validation_epoch_end` hook, which was removed in Lightning 2.0.
+#   * torch is pinned < 2.0 to stay compatible with regLM (see
+#     regLM/setup.cfg) and the pinned hyenaDNA checkpoints.
+#   * transformers >= 4.45 is required for the Llama-3.2 / Qwen-2.5
+#     instruction encoders used as the multi-modal text tower.
+#
+# hyenaDNA and regLM are installed separately (see README.md); they
+# bring their own dependencies on top of the ones below.
+# =====================================================================
+
+torch==1.13.1
+pytorch-lightning==1.9.5
+torchmetrics==0.11.4
+
+transformers==4.45.2
+tokenizers==0.20.3
+accelerate==0.34.2
+safetensors==0.4.5
+
+numpy==1.24.4
+pandas==2.0.3
+scipy==1.10.1
+scikit-learn==1.3.2
+einops==0.7.0
+tqdm==4.66.5
+plotnine==0.12.4
+
+# regLM optional extras (see regLM/setup.cfg)
+captum==0.5.0
+enformer-pytorch==0.8.6
